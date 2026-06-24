@@ -122,6 +122,94 @@ def get_currency(symbol: str) -> str:
     return currency
 
 
+def resolve_fill_price(symbol: str, date: str) -> float | None:
+    """Best available *native-currency* fill price for ``symbol`` on ``date``.
+
+    yfinance only serves intraday bars for roughly the last 60 days, so the
+    finest grain we can capture depends on how recent the trade is:
+
+    * trade dated today (or so recent the close isn't settled yet) → the most
+      recent intraday/last price;
+    * trade within the intraday window (~60 days) → the last intraday bar of
+      that day, i.e. its effective close;
+    * older than that → the daily close for that day.
+
+    Returns ``None`` on any failure so the caller can fall back to the daily
+    close. The price is a snapshot: intraday history is not re-fetchable later.
+    """
+    try:
+        trade_day = pd.Timestamp(date).normalize()
+    except (ValueError, TypeError):
+        return None
+
+    today = pd.Timestamp.now().normalize()
+    age_days = (today - trade_day).days
+
+    # Too far in the past for intraday data: use the daily close for that day.
+    if age_days > 58:
+        return _daily_close_on(symbol, trade_day)
+
+    # Recent enough to have intraday bars. 5m reaches ~60 days back.
+    try:
+        intraday = yf.Ticker(symbol).history(
+            start=trade_day.strftime("%Y-%m-%d"),
+            end=(trade_day + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="5m",
+            auto_adjust=True,
+        )
+    except Exception:
+        intraday = None
+
+    if intraday is not None and not intraday.empty and "Close" in intraday.columns:
+        closes = intraday["Close"].dropna()
+        if not closes.empty:
+            return _clean(closes.iloc[-1])
+
+    # No intraday bar for that day. If the trade is today (or in the future),
+    # the session may be open / the close unsettled — use the latest price.
+    if trade_day >= today:
+        last = _latest_price(symbol)
+        if last is not None:
+            return last
+
+    # Otherwise fall back to the daily close for that day.
+    return _daily_close_on(symbol, trade_day)
+
+
+def _daily_close_on(symbol: str, day: pd.Timestamp) -> float | None:
+    """Daily close on ``day`` (or the most recent prior trading day)."""
+    try:
+        df = yf.Ticker(symbol).history(
+            start=(day - pd.Timedelta(days=7)).strftime("%Y-%m-%d"),
+            end=(day + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="1d",
+            auto_adjust=True,
+        )
+    except Exception:
+        return None
+    if df is None or df.empty or "Close" not in df.columns:
+        return None
+    closes = df["Close"].dropna()
+    return _clean(closes.iloc[-1]) if not closes.empty else None
+
+
+def _latest_price(symbol: str) -> float | None:
+    """Most recent traded price (intraday last, then fast_info)."""
+    try:
+        df = yf.Ticker(symbol).history(period="1d", interval="1m", auto_adjust=True)
+        if df is not None and not df.empty and "Close" in df.columns:
+            closes = df["Close"].dropna()
+            if not closes.empty:
+                return _clean(closes.iloc[-1])
+    except Exception:
+        pass
+    try:
+        info = yf.Ticker(symbol).fast_info
+        return _clean(info.get("last_price") or info.get("lastPrice"))
+    except Exception:
+        return None
+
+
 def custom_instrument(symbol: str) -> Instrument:
     """Build a transient Instrument for a user-added ticker not in the registry."""
     color = _CUSTOM_COLORS[sum(ord(c) for c in symbol) % len(_CUSTOM_COLORS)]

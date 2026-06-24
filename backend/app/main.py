@@ -21,6 +21,7 @@ from .market import (
     get_history,
     get_overview,
     get_quotes,
+    resolve_fill_price,
 )
 from .portfolio import run_portfolio
 
@@ -293,6 +294,45 @@ def _trade_dict(t: TradeIn) -> dict[str, Any]:
     return out
 
 
+def _snapshot_price(trade: dict[str, Any]) -> dict[str, Any]:
+    """Freeze a fill price onto a trade that lacks a manual override.
+
+    Resolves the best-grained native-currency price for the trade date and
+    stores it on ``price`` so it is never re-fetched (yfinance intraday only
+    reaches back ~60 days). A trade that already carries a ``price`` — a user
+    override or a previously snapshotted value — is returned untouched.
+    """
+    if trade.get("price") not in (None, "", 0):
+        return trade
+    resolved = resolve_fill_price(trade["symbol"], trade["date"])
+    if resolved is not None:
+        trade = dict(trade)
+        trade["price"] = resolved
+    return trade
+
+
+def _snapshot_new_trades(
+    trades: list[dict[str, Any]], existing: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Snapshot fill prices for trades that are new and price-less.
+
+    Trades already present (matched by id) keep their stored price as-is, so an
+    edit never re-resolves a price that was captured at trade time.
+    """
+    priced_ids = {
+        t.get("id")
+        for t in (existing or [])
+        if t.get("id") and t.get("price") not in (None, "", 0)
+    }
+    out = []
+    for t in trades:
+        if t.get("id") in priced_ids:
+            out.append(t)
+        else:
+            out.append(_snapshot_price(t))
+    return out
+
+
 @app.get("/api/portfolios")
 def list_portfolios() -> list[dict]:
     return store.get_portfolios()
@@ -300,7 +340,7 @@ def list_portfolios() -> list[dict]:
 
 @app.post("/api/portfolios", status_code=201)
 def create_portfolio(payload: PortfolioIn) -> dict:
-    trades = [_trade_dict(t) for t in payload.trades]
+    trades = _snapshot_new_trades([_trade_dict(t) for t in payload.trades])
     return store.create_portfolio(
         {
             "name": payload.name,
@@ -315,7 +355,11 @@ def create_portfolio(payload: PortfolioIn) -> dict:
 def edit_portfolio(portfolio_id: str, patch: PortfolioPatch) -> dict:
     update: dict[str, Any] = patch.model_dump(exclude_none=True, exclude={"trades"})
     if patch.trades is not None:
-        update["trades"] = [_trade_dict(t) for t in patch.trades]
+        existing = store.get_portfolio(portfolio_id)
+        update["trades"] = _snapshot_new_trades(
+            [_trade_dict(t) for t in patch.trades],
+            existing["trades"] if existing else None,
+        )
     result = store.update_portfolio(portfolio_id, update)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Portfolio not found: {portfolio_id}")
@@ -334,7 +378,7 @@ def append_trade(portfolio_id: str, trade: TradeIn) -> dict:
     symbol = trade.symbol.strip().upper()
     if symbol not in BY_SLUG and not _ticker_has_data(symbol):
         raise HTTPException(status_code=400, detail=f"No price data for ticker: {symbol}")
-    result = store.add_trade(portfolio_id, _trade_dict(trade))
+    result = store.add_trade(portfolio_id, _snapshot_price(_trade_dict(trade)))
     if result is None:
         raise HTTPException(status_code=404, detail=f"Portfolio not found: {portfolio_id}")
     return result

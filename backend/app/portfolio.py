@@ -6,9 +6,11 @@ to cash, available for later buys. So the user only logs buys and sells; the
 equity curve (cash + holdings value over time) and invested capital follow.
 
 Each trade can be recorded by share count or by JPY amount; the missing one is
-derived from that day's price. The fill price defaults to the trade date's
-close and can be overridden per trade (native currency). Foreign instruments
-are converted to JPY via the matching ``<CCY>JPY=X`` FX series.
+derived from that day's price. The fill price is snapshotted in native currency
+when the trade is logged (see ``resolve_fill_price``) and stored on the trade;
+trades without a snapshot (or with a manual override) fall back to the trade
+date's daily close here. Foreign instruments are converted to JPY via the
+matching ``<CCY>JPY=X`` FX series.
 """
 
 from __future__ import annotations
