@@ -14,6 +14,7 @@ import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { useCustomTickers } from "@/lib/storage";
 import InstrumentCard from "@/components/InstrumentCard";
 import AddTickerForm from "@/components/AddTickerForm";
+import PortfolioHero from "@/components/PortfolioHero";
 
 type SortKey = "default" | "gainers" | "losers";
 
@@ -140,6 +141,8 @@ export default function Home() {
 
   return (
     <div className="flex flex-col gap-8">
+      <PortfolioHero />
+
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">マーケット概況</h1>

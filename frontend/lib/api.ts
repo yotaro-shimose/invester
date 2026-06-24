@@ -329,6 +329,7 @@ export interface PortfolioPerformance extends Freshness {
   holdingsValue: number;
   totalPnl: number;
   totalReturnPct: number;
+  cagrPct: number;
   realizedPnl: number;
   unrealizedPnl: number;
   maxDrawdownPct: number;

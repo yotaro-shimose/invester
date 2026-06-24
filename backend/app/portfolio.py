@@ -164,6 +164,14 @@ def _compute(trades: list[dict[str, Any]]) -> dict[str, Any]:
     drawdown = (value / running_max - 1.0) * 100.0
     max_drawdown = float(drawdown.min())
 
+    span = pd.Timestamp(value.index[-1]) - pd.Timestamp(value.index[0])
+    days = span.days or 1
+    cagr = (
+        ((current_value / invested) ** (365.0 / days) - 1.0) * 100.0
+        if invested > 0
+        else 0.0
+    )
+
     points = [
         {"time": pd.Timestamp(ts).strftime("%Y-%m-%d"), "value": float(v)}
         for ts, v in value.items()
@@ -178,6 +186,7 @@ def _compute(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "holdingsValue": current_value - cash,
         "totalPnl": total_pnl,
         "totalReturnPct": total_return,
+        "cagrPct": cagr,
         "realizedPnl": realized,
         "unrealizedPnl": unrealized,
         "maxDrawdownPct": max_drawdown,
