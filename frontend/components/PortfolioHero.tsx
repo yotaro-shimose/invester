@@ -9,7 +9,7 @@ import {
 import { formatJpy, formatPct, trendClass } from "@/lib/format";
 import { usePortfolios } from "@/lib/storage";
 import Markdown from "./Markdown";
-import StrategyComparisonChart from "./StrategyComparisonChart";
+import PortfolioPerformanceChart from "./PortfolioPerformanceChart";
 
 const SELECTED_KEY = "invester.selectedPortfolio";
 
@@ -200,16 +200,11 @@ export default function PortfolioHero() {
             <Metric label="評価期間" value={`${perf.start} → ${perf.end}`} className="text-zinc-400 text-sm" />
           </div>
 
-          <div className="h-[260px] rounded-xl border border-zinc-800/80 bg-zinc-950/30 p-2">
-            <StrategyComparisonChart
-              series={[
-                {
-                  id: selected!.id,
-                  name: selected!.name,
-                  color: selected!.color,
-                  points: perf.points,
-                },
-              ]}
+          <div className="h-[320px] rounded-xl border border-zinc-800/80 bg-zinc-950/30 p-3">
+            <PortfolioPerformanceChart
+              points={perf.points}
+              name={selected!.name}
+              color={selected!.color}
             />
           </div>
         </>

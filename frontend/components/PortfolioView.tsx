@@ -11,7 +11,7 @@ import {
 import { formatJpy, formatPct, trendClass } from "@/lib/format";
 import AddTradeForm from "./AddTradeForm";
 import Markdown from "./Markdown";
-import StrategyComparisonChart from "./StrategyComparisonChart";
+import PortfolioPerformanceChart from "./PortfolioPerformanceChart";
 import type { PickItem } from "./StrategyBuilder";
 
 function Metric({
@@ -149,16 +149,11 @@ export default function PortfolioView({
             <Metric label="含み損益" value={formatJpy(perf.unrealizedPnl)} className={trendClass(perf.unrealizedPnl)} />
           </div>
 
-          <div className="h-[300px] rounded-xl border border-zinc-800/80 bg-zinc-950/30 p-2">
-            <StrategyComparisonChart
-              series={[
-                {
-                  id: portfolio.id,
-                  name: portfolio.name,
-                  color: portfolio.color,
-                  points: perf.points,
-                },
-              ]}
+          <div className="h-[340px] rounded-xl border border-zinc-800/80 bg-zinc-950/30 p-3">
+            <PortfolioPerformanceChart
+              points={perf.points}
+              name={portfolio.name}
+              color={portfolio.color}
             />
           </div>
 
