@@ -1,0 +1,13 @@
+[project]
+name = "invester-backend"
+version = "0.1.0"
+description = "Sector & index stock price viewer API (FastAPI + yfinance)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "yfinance>=0.2.51",
+]
+
+[tool.uv]
+package = false
