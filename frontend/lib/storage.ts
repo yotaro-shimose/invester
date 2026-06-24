@@ -1,129 +1,188 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  addTrade,
+  addWatchlistTicker,
+  createPortfolio,
+  createStrategy,
+  deletePortfolio,
+  deleteStrategy,
+  fetchPortfolios,
+  fetchStrategies,
+  fetchWatchlist,
+  removeTrade,
+  removeWatchlistTicker,
+  updatePortfolio,
+  updateStrategy,
+  type CustomTicker,
+  type Portfolio,
+  type PortfolioInput,
+  type Strategy,
+  type StrategyInput,
+  type Trade,
+} from "./api";
 
-export interface CustomTicker {
-  symbol: string; // yfinance ticker, uppercased
-  label: string; // user-facing name
-}
-
-export interface StrategyAllocation {
-  symbol: string; // yfinance ticker
-  label: string; // display name (snapshot at creation time)
-  weight: number; // percent of portfolio (0-100)
-}
-
-export interface Strategy {
-  id: string;
-  name: string;
-  color: string;
-  start: string; // "YYYY-MM-DD"
-  initialJpy: number;
-  allocations: StrategyAllocation[];
-}
-
-const TICKERS_KEY = "invester.customTickers";
-const STRATEGIES_KEY = "invester.strategies";
-
-function read<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
+// Re-export domain types so existing imports keep working.
+export type { CustomTicker, Portfolio, PortfolioInput, Strategy, StrategyInput, Trade };
+export type { Allocation as StrategyAllocation, Leg } from "./api";
 
 /**
- * localStorage-backed state that stays in sync across hook instances (and
- * browser tabs) via a custom event + the native `storage` event.
+ * The watchlist and strategies are persisted on the backend. These hooks load
+ * from the API and mutate through it, so the UI and any other caller (e.g. the
+ * assistant via curl) share one source of truth. A window event lets multiple
+ * mounted hook instances refresh after a mutation.
  */
-function useLocalStorage<T>(key: string, fallback: T) {
-  const [value, setValue] = useState<T>(fallback);
+const WATCHLIST_EVENT = "data:watchlist";
+const STRATEGIES_EVENT = "data:strategies";
+const PORTFOLIOS_EVENT = "data:portfolios";
 
-  useEffect(() => {
-    setValue(read(key, fallback));
-    const sync = () => setValue(read(key, fallback));
-    window.addEventListener("storage", sync);
-    window.addEventListener(`ls:${key}`, sync);
-    return () => {
-      window.removeEventListener("storage", sync);
-      window.removeEventListener(`ls:${key}`, sync);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  const update = useCallback(
-    (next: T | ((prev: T) => T)) => {
-      setValue((prev) => {
-        const resolved =
-          typeof next === "function" ? (next as (p: T) => T)(prev) : next;
-        try {
-          window.localStorage.setItem(key, JSON.stringify(resolved));
-          window.dispatchEvent(new Event(`ls:${key}`));
-        } catch {
-          /* ignore quota / serialization errors */
-        }
-        return resolved;
-      });
-    },
-    [key],
-  );
-
-  return [value, update] as const;
+function ping(event: string) {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(event));
 }
 
 export function useCustomTickers() {
-  const [tickers, setTickers] = useLocalStorage<CustomTicker[]>(TICKERS_KEY, []);
+  const [tickers, setTickers] = useState<CustomTicker[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    try {
+      setTickers(await fetchWatchlist());
+    } catch {
+      /* leave previous state */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    reload();
+    const onChange = () => reload();
+    window.addEventListener(WATCHLIST_EVENT, onChange);
+    return () => window.removeEventListener(WATCHLIST_EVENT, onChange);
+  }, [reload]);
 
   const add = useCallback(
-    (ticker: CustomTicker) =>
-      setTickers((prev) =>
-        prev.some((t) => t.symbol === ticker.symbol)
-          ? prev
-          : [...prev, ticker],
-      ),
-    [setTickers],
+    async (symbol: string, label?: string) => {
+      await addWatchlistTicker(symbol, label);
+      ping(WATCHLIST_EVENT);
+      await reload();
+    },
+    [reload],
   );
 
   const remove = useCallback(
-    (symbol: string) =>
-      setTickers((prev) => prev.filter((t) => t.symbol !== symbol)),
-    [setTickers],
+    async (symbol: string) => {
+      await removeWatchlistTicker(symbol);
+      ping(WATCHLIST_EVENT);
+      await reload();
+    },
+    [reload],
   );
 
-  return { tickers, add, remove };
+  return { tickers, loading, add, remove, reload };
 }
 
 export function useStrategies() {
-  const [strategies, setStrategies] = useLocalStorage<Strategy[]>(
-    STRATEGIES_KEY,
-    [],
-  );
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const upsert = useCallback(
-    (strategy: Strategy) =>
-      setStrategies((prev) => {
-        const idx = prev.findIndex((s) => s.id === strategy.id);
-        if (idx === -1) return [...prev, strategy];
-        const next = [...prev];
-        next[idx] = strategy;
-        return next;
-      }),
-    [setStrategies],
+  const reload = useCallback(async () => {
+    try {
+      setStrategies(await fetchStrategies());
+    } catch {
+      /* leave previous state */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    reload();
+    const onChange = () => reload();
+    window.addEventListener(STRATEGIES_EVENT, onChange);
+    return () => window.removeEventListener(STRATEGIES_EVENT, onChange);
+  }, [reload]);
+
+  const save = useCallback(
+    async (input: StrategyInput, id?: string) => {
+      if (id) await updateStrategy(id, input);
+      else await createStrategy(input);
+      ping(STRATEGIES_EVENT);
+      await reload();
+    },
+    [reload],
   );
 
   const remove = useCallback(
-    (id: string) => setStrategies((prev) => prev.filter((s) => s.id !== id)),
-    [setStrategies],
+    async (id: string) => {
+      await deleteStrategy(id);
+      ping(STRATEGIES_EVENT);
+      await reload();
+    },
+    [reload],
   );
 
-  return { strategies, upsert, remove };
+  return { strategies, loading, save, remove, reload };
 }
 
-let idCounter = 0;
-export function newId(): string {
-  idCounter += 1;
-  return `s_${Date.now().toString(36)}_${idCounter}`;
+export function usePortfolios() {
+  const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    try {
+      setPortfolios(await fetchPortfolios());
+    } catch {
+      /* leave previous state */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    reload();
+    const onChange = () => reload();
+    window.addEventListener(PORTFOLIOS_EVENT, onChange);
+    return () => window.removeEventListener(PORTFOLIOS_EVENT, onChange);
+  }, [reload]);
+
+  const save = useCallback(
+    async (input: Partial<PortfolioInput>, id?: string) => {
+      if (id) await updatePortfolio(id, input);
+      else await createPortfolio(input as PortfolioInput);
+      ping(PORTFOLIOS_EVENT);
+      await reload();
+    },
+    [reload],
+  );
+
+  const remove = useCallback(
+    async (id: string) => {
+      await deletePortfolio(id);
+      ping(PORTFOLIOS_EVENT);
+      await reload();
+    },
+    [reload],
+  );
+
+  const appendTrade = useCallback(
+    async (id: string, trade: Trade) => {
+      await addTrade(id, trade);
+      ping(PORTFOLIOS_EVENT);
+      await reload();
+    },
+    [reload],
+  );
+
+  const deleteTrade = useCallback(
+    async (id: string, tradeId: string) => {
+      await removeTrade(id, tradeId);
+      ping(PORTFOLIOS_EVENT);
+      await reload();
+    },
+    [reload],
+  );
+
+  return { portfolios, loading, save, remove, appendTrade, deleteTrade, reload };
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { fetchQuotes } from "@/lib/api";
 import { BUILTIN_SYMBOLS } from "@/lib/instruments";
 import { useCustomTickers } from "@/lib/storage";
 
@@ -27,17 +26,11 @@ export default function AddTickerForm() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetchQuotes([sym], { refresh: true });
-      const found = res.instruments.find((i) => i.symbol === sym);
-      if (!found || found.price == null) {
-        setError(`「${sym}」の価格データが見つかりませんでした。`);
-        return;
-      }
-      add({ symbol: sym, label: label.trim() || sym });
+      await add(sym, label.trim() || undefined);
       setSymbol("");
       setLabel("");
-    } catch {
-      setError("追加に失敗しました。ティッカーを確認してください。");
+    } catch (err) {
+      setError((err as Error).message || "追加に失敗しました。");
     } finally {
       setBusy(false);
     }

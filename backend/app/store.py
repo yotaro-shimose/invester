@@ -43,7 +43,9 @@ def _read() -> dict[str, Any]:
         return _default()
     data.setdefault("tickers", [])
     data.setdefault("strategies", [])
+    data.setdefault("portfolios", [])
     data["strategies"] = [_normalize_strategy(s) for s in data["strategies"]]
+    data["portfolios"] = [_normalize_portfolio(p) for p in data["portfolios"]]
     return data
 
 
@@ -71,10 +73,17 @@ def _normalize_strategy(s: dict[str, Any]) -> dict[str, Any]:
     return s
 
 
-def _new_id() -> str:
+def _normalize_portfolio(p: dict[str, Any]) -> dict[str, Any]:
+    p = dict(p)
+    p.setdefault("notes", "")
+    p.setdefault("trades", [])
+    return p
+
+
+def _new_id(prefix: str = "s") -> str:
     global _id_counter
     _id_counter += 1
-    return f"s_{time.time_ns()}_{_id_counter}"
+    return f"{prefix}_{time.time_ns()}_{_id_counter}"
 
 
 # ----- watchlist tickers -------------------------------------------------
@@ -163,3 +172,98 @@ def delete_strategy(strategy_id: str) -> bool:
         data["strategies"] = [s for s in data["strategies"] if s["id"] != strategy_id]
         _write(data)
         return len(data["strategies"]) < before
+
+
+# ----- portfolios (actual trades) ---------------------------------------
+
+def get_portfolios() -> list[dict[str, Any]]:
+    with _lock:
+        return _read()["portfolios"]
+
+
+def get_portfolio(portfolio_id: str) -> dict[str, Any] | None:
+    with _lock:
+        for p in _read()["portfolios"]:
+            if p["id"] == portfolio_id:
+                return p
+    return None
+
+
+def _prepare_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure every trade has an id."""
+    out = []
+    for t in trades:
+        t = dict(t)
+        if not t.get("id"):
+            t["id"] = _new_id("t")
+        out.append(t)
+    return out
+
+
+def create_portfolio(payload: dict[str, Any]) -> dict[str, Any]:
+    with _lock:
+        data = _read()
+        portfolio = {
+            "id": _new_id("p"),
+            "name": payload.get("name", "ポートフォリオ"),
+            "color": payload.get("color")
+            or PALETTE[len(data["portfolios"]) % len(PALETTE)],
+            "notes": payload.get("notes", ""),
+            "trades": _prepare_trades(payload.get("trades", [])),
+        }
+        data["portfolios"].append(portfolio)
+        _write(data)
+        return portfolio
+
+
+def update_portfolio(portfolio_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
+    with _lock:
+        data = _read()
+        for i, p in enumerate(data["portfolios"]):
+            if p["id"] == portfolio_id:
+                for key in ("name", "color", "notes"):
+                    if key in patch and patch[key] is not None:
+                        p[key] = patch[key]
+                if patch.get("trades") is not None:
+                    p["trades"] = _prepare_trades(patch["trades"])
+                data["portfolios"][i] = p
+                _write(data)
+                return p
+    return None
+
+
+def delete_portfolio(portfolio_id: str) -> bool:
+    with _lock:
+        data = _read()
+        before = len(data["portfolios"])
+        data["portfolios"] = [
+            p for p in data["portfolios"] if p["id"] != portfolio_id
+        ]
+        _write(data)
+        return len(data["portfolios"]) < before
+
+
+def add_trade(portfolio_id: str, trade: dict[str, Any]) -> dict[str, Any] | None:
+    with _lock:
+        data = _read()
+        for i, p in enumerate(data["portfolios"]):
+            if p["id"] == portfolio_id:
+                new_trade = dict(trade)
+                new_trade["id"] = _new_id("t")
+                p["trades"].append(new_trade)
+                data["portfolios"][i] = p
+                _write(data)
+                return p
+    return None
+
+
+def remove_trade(portfolio_id: str, trade_id: str) -> dict[str, Any] | None:
+    with _lock:
+        data = _read()
+        for i, p in enumerate(data["portfolios"]):
+            if p["id"] == portfolio_id:
+                p["trades"] = [t for t in p["trades"] if t.get("id") != trade_id]
+                data["portfolios"][i] = p
+                _write(data)
+                return p
+    return None

@@ -1,25 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { runBacktest, type BacktestResult } from "@/lib/api";
+import { runBacktest, type BacktestResult, type Strategy } from "@/lib/api";
 import { formatJpy, formatPct, trendClass } from "@/lib/format";
 import { BUILTIN_INSTRUMENTS } from "@/lib/instruments";
-import {
-  newId,
-  useCustomTickers,
-  useStrategies,
-  type Strategy,
-} from "@/lib/storage";
+import { useCustomTickers, useStrategies } from "@/lib/storage";
 import StrategyBuilder, {
   type PickItem,
   type StrategyDraft,
 } from "@/components/StrategyBuilder";
 import StrategyComparisonChart from "@/components/StrategyComparisonChart";
-
-const PALETTE = [
-  "#34d399", "#60a5fa", "#f472b6", "#fbbf24",
-  "#a78bfa", "#f87171", "#22d3ee", "#a3e635",
-];
+import Markdown from "@/components/Markdown";
 
 interface RunState {
   loading: boolean;
@@ -28,7 +19,7 @@ interface RunState {
 }
 
 export default function StrategiesPage() {
-  const { strategies, upsert, remove } = useStrategies();
+  const { strategies, save, remove } = useStrategies();
   const { tickers } = useCustomTickers();
   const [results, setResults] = useState<Record<string, RunState>>({});
   const [showBuilder, setShowBuilder] = useState(false);
@@ -51,12 +42,7 @@ export default function StrategiesPage() {
   );
 
   const strategiesKey = JSON.stringify(
-    strategies.map((s) => ({
-      i: s.id,
-      s: s.start,
-      j: s.initialJpy,
-      a: s.allocations,
-    })),
+    strategies.map((s) => ({ i: s.id, j: s.initialJpy, l: s.legs })),
   );
 
   useEffect(() => {
@@ -74,14 +60,7 @@ export default function StrategiesPage() {
     Promise.all(
       strategies.map(async (s) => {
         try {
-          const res = await runBacktest({
-            allocations: s.allocations.map((a) => ({
-              symbol: a.symbol,
-              weight: a.weight,
-            })),
-            start: s.start,
-            initialJpy: s.initialJpy,
-          });
+          const res = await runBacktest({ legs: s.legs, initialJpy: s.initialJpy });
           if (!cancelled)
             setResults((r) => ({ ...r, [s.id]: { loading: false, result: res } }));
         } catch (e) {
@@ -98,18 +77,16 @@ export default function StrategiesPage() {
     };
   }, [strategiesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function handleSave(draft: StrategyDraft) {
-    const id = draft.id ?? newId();
-    const existing = strategies.find((s) => s.id === id);
-    const color = existing?.color ?? PALETTE[strategies.length % PALETTE.length];
-    upsert({
-      id,
-      color,
-      name: draft.name,
-      start: draft.start,
-      initialJpy: draft.initialJpy,
-      allocations: draft.allocations,
-    });
+  async function handleSave(draft: StrategyDraft) {
+    await save(
+      {
+        name: draft.name,
+        notes: draft.notes,
+        initialJpy: draft.initialJpy,
+        legs: draft.legs,
+      },
+      draft.id,
+    );
     setShowBuilder(false);
     setEditing(null);
   }
@@ -128,8 +105,9 @@ export default function StrategiesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">戦略バックテスト</h1>
           <p className="mt-1 max-w-2xl text-sm text-zinc-400">
-            銘柄に配分(%)を設定し、残りは円キャッシュで保有。開始日に¥で買い付けて
-            そのまま保有(バイ&ホールド)した場合の評価額を、円建て(為替込み)で振り返る。
+            銘柄に配分(%)を設定し、残りは円キャッシュで保有。途中の日付で
+            <span className="text-zinc-200">ポートフォリオを移動(リバランス)</span>
+            することもできる。評価は円建て(為替込み)。
           </p>
         </div>
         {!showBuilder && (
@@ -177,11 +155,10 @@ export default function StrategiesPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {strategies.map((s) => {
           const run = results[s.id];
           const r = run?.result;
-          const totalW = s.allocations.reduce((a, b) => a + b.weight, 0);
           return (
             <div
               key={s.id}
@@ -214,20 +191,31 @@ export default function StrategiesPage() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-1.5 text-xs text-zinc-400">
-                {s.allocations.map((a) => (
-                  <span
-                    key={a.symbol}
-                    className="rounded-full bg-zinc-800/70 px-2 py-0.5"
-                  >
-                    {a.label} {a.weight}%
-                  </span>
-                ))}
-                {totalW < 100 && (
-                  <span className="rounded-full bg-zinc-800/40 px-2 py-0.5 text-zinc-500">
-                    円 {(100 - totalW).toFixed(0)}%
-                  </span>
-                )}
+              {/* allocation timeline */}
+              <div className="flex flex-col gap-1.5">
+                {s.legs.map((leg, i) => {
+                  const sumW = leg.allocations.reduce((a, b) => a + b.weight, 0);
+                  return (
+                    <div key={i} className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-400">
+                        {i === 0 ? "開始" : "→"} {leg.date}
+                      </span>
+                      {leg.allocations.map((a) => (
+                        <span
+                          key={a.symbol}
+                          className="rounded-full bg-zinc-800/70 px-2 py-0.5 text-zinc-300"
+                        >
+                          {a.label} {a.weight}%
+                        </span>
+                      ))}
+                      {sumW < 100 && (
+                        <span className="rounded-full bg-zinc-800/40 px-2 py-0.5 text-zinc-500">
+                          円 {(100 - sumW).toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               {run?.error ? (
@@ -275,6 +263,12 @@ export default function StrategiesPage() {
                 </>
               ) : (
                 <div className="text-sm text-zinc-500">計算中…</div>
+              )}
+
+              {s.notes.trim() && (
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                  <Markdown>{s.notes}</Markdown>
+                </div>
               )}
             </div>
           );

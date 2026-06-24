@@ -127,13 +127,120 @@ export async function fetchQuotes(
   return res.json();
 }
 
-export interface BacktestAllocation {
+// ----- persisted watchlist + strategies (backend is source of truth) -----
+
+export interface CustomTicker {
   symbol: string;
-  weight: number; // percent of portfolio (0-100)
+  label: string;
 }
+
+export interface Allocation {
+  symbol: string;
+  label: string;
+  weight: number; // percent (0-100)
+}
+
+export interface Leg {
+  date: string; // "YYYY-MM-DD"
+  allocations: Allocation[];
+}
+
+export interface Strategy {
+  id: string;
+  name: string;
+  color: string;
+  notes: string; // markdown
+  initialJpy: number;
+  legs: Leg[];
+}
+
+export type StrategyInput = Omit<Strategy, "id" | "color"> & {
+  color?: string;
+};
+
+async function jsonOrThrow(res: Response, what: string) {
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `${what} (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function fetchWatchlist(
+  signal?: AbortSignal,
+): Promise<CustomTicker[]> {
+  const res = await fetch(`${API_BASE}/api/watchlist`, {
+    cache: "no-store",
+    signal,
+  });
+  return jsonOrThrow(res, "Failed to load watchlist");
+}
+
+export async function addWatchlistTicker(
+  symbol: string,
+  label?: string,
+): Promise<CustomTicker> {
+  const res = await fetch(`${API_BASE}/api/watchlist`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ symbol, label }),
+  });
+  return jsonOrThrow(res, "Failed to add ticker");
+}
+
+export async function removeWatchlistTicker(symbol: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/api/watchlist/${encodeURIComponent(symbol)}`,
+    { method: "DELETE" },
+  );
+  await jsonOrThrow(res, "Failed to remove ticker");
+}
+
+export async function fetchStrategies(signal?: AbortSignal): Promise<Strategy[]> {
+  const res = await fetch(`${API_BASE}/api/strategies`, {
+    cache: "no-store",
+    signal,
+  });
+  return jsonOrThrow(res, "Failed to load strategies");
+}
+
+export async function createStrategy(input: StrategyInput): Promise<Strategy> {
+  const res = await fetch(`${API_BASE}/api/strategies`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow(res, "Failed to create strategy");
+}
+
+export async function updateStrategy(
+  id: string,
+  patch: Partial<StrategyInput>,
+): Promise<Strategy> {
+  const res = await fetch(`${API_BASE}/api/strategies/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow(res, "Failed to update strategy");
+}
+
+export async function deleteStrategy(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/strategies/${id}`, {
+    method: "DELETE",
+  });
+  await jsonOrThrow(res, "Failed to delete strategy");
+}
+
+// ----- backtest ----------------------------------------------------------
 
 export interface BacktestPoint {
   time: string;
+  value: number;
+}
+
+export interface Rebalance {
+  date: string;
   value: number;
 }
 
@@ -145,17 +252,12 @@ export interface BacktestResult extends Freshness {
   cagrPct: number;
   effectiveStart: string;
   end: string;
-  cashJpy: number;
+  rebalances: Rebalance[];
   points: BacktestPoint[];
 }
 
 export async function runBacktest(
-  req: {
-    allocations: BacktestAllocation[];
-    start: string;
-    initialJpy?: number;
-    refresh?: boolean;
-  },
+  req: { legs: Leg[]; initialJpy?: number; refresh?: boolean },
   signal?: AbortSignal,
 ): Promise<BacktestResult> {
   const res = await fetch(`${API_BASE}/api/backtest`, {
@@ -165,11 +267,141 @@ export async function runBacktest(
     cache: "no-store",
     signal,
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `Backtest failed (${res.status})`);
-  }
-  return res.json();
+  return jsonOrThrow(res, "Backtest failed");
+}
+
+// ----- portfolios (actual trade log, persisted) -------------------------
+
+export type TradeSide = "buy" | "sell";
+export type TradeMode = "shares" | "amount";
+
+export interface Trade {
+  id?: string;
+  date: string; // "YYYY-MM-DD"
+  symbol: string;
+  side: TradeSide;
+  mode: TradeMode;
+  shares?: number | null;
+  amountJpy?: number | null;
+  price?: number | null; // native fill price override
+}
+
+export interface Portfolio {
+  id: string;
+  name: string;
+  color: string;
+  notes: string; // markdown
+  trades: Trade[];
+}
+
+export type PortfolioInput = Omit<Portfolio, "id" | "color"> & {
+  color?: string;
+};
+
+export interface Position {
+  symbol: string;
+  label: string;
+  shares: number;
+  avgCostJpy: number;
+  priceJpy: number;
+  valueJpy: number;
+  unrealizedPnl: number;
+  unrealizedPct: number;
+}
+
+export interface TradeDetail {
+  id: string | null;
+  date: string;
+  symbol: string;
+  label: string;
+  side: TradeSide;
+  shares: number;
+  priceJpy: number;
+  costJpy: number;
+}
+
+export interface PortfolioPerformance extends Freshness {
+  start: string;
+  end: string;
+  investedCapital: number;
+  currentValue: number;
+  cashJpy: number;
+  holdingsValue: number;
+  totalPnl: number;
+  totalReturnPct: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  maxDrawdownPct: number;
+  positions: Position[];
+  tradeDetails: TradeDetail[];
+  points: BacktestPoint[];
+}
+
+export async function fetchPortfolios(signal?: AbortSignal): Promise<Portfolio[]> {
+  const res = await fetch(`${API_BASE}/api/portfolios`, {
+    cache: "no-store",
+    signal,
+  });
+  return jsonOrThrow(res, "Failed to load portfolios");
+}
+
+export async function createPortfolio(input: PortfolioInput): Promise<Portfolio> {
+  const res = await fetch(`${API_BASE}/api/portfolios`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow(res, "Failed to create portfolio");
+}
+
+export async function updatePortfolio(
+  id: string,
+  patch: Partial<PortfolioInput>,
+): Promise<Portfolio> {
+  const res = await fetch(`${API_BASE}/api/portfolios/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow(res, "Failed to update portfolio");
+}
+
+export async function deletePortfolio(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/portfolios/${id}`, {
+    method: "DELETE",
+  });
+  await jsonOrThrow(res, "Failed to delete portfolio");
+}
+
+export async function addTrade(id: string, trade: Trade): Promise<Portfolio> {
+  const res = await fetch(`${API_BASE}/api/portfolios/${id}/trades`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(trade),
+  });
+  return jsonOrThrow(res, "Failed to add trade");
+}
+
+export async function removeTrade(
+  id: string,
+  tradeId: string,
+): Promise<Portfolio> {
+  const res = await fetch(`${API_BASE}/api/portfolios/${id}/trades/${tradeId}`, {
+    method: "DELETE",
+  });
+  return jsonOrThrow(res, "Failed to remove trade");
+}
+
+export async function fetchPortfolioPerformance(
+  id: string,
+  opts: { refresh?: boolean; signal?: AbortSignal } = {},
+): Promise<PortfolioPerformance> {
+  const qs = opts.refresh ? "?refresh=true" : "";
+  const res = await fetch(`${API_BASE}/api/portfolios/${id}/performance${qs}`, {
+    cache: "no-store",
+    signal: opts.signal,
+  });
+  return jsonOrThrow(res, "Failed to compute performance");
 }
 
 export async function fetchHistory(

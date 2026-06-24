@@ -5,7 +5,7 @@ exclusively through these endpoints — the frontend UI and any ad-hoc caller
 (e.g. curl) go through the same CRUD API, so they always stay in sync.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,7 @@ from .market import (
     get_overview,
     get_quotes,
 )
+from .portfolio import run_portfolio
 
 app = FastAPI(title="Invester API", version="0.4.0")
 
@@ -237,5 +238,124 @@ def backtest_saved(strategy_id: str, refresh: bool = False) -> dict:
         raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
     try:
         return run_backtest(strategy["legs"], strategy["initialJpy"], force=refresh)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ----- portfolios: actual trade log (persisted) -------------------------
+
+class TradeIn(BaseModel):
+    id: str | None = None
+    date: str  # "YYYY-MM-DD"
+    symbol: str
+    side: Literal["buy", "sell"] = "buy"
+    mode: Literal["shares", "amount"] = "shares"
+    shares: float | None = None
+    amountJpy: float | None = None
+    price: float | None = None  # native fill price override (optional)
+
+
+class PortfolioIn(BaseModel):
+    name: str = "ポートフォリオ"
+    color: str | None = None
+    notes: str = ""  # markdown
+    trades: list[TradeIn] = Field(default_factory=list)
+
+
+class PortfolioPatch(BaseModel):
+    name: str | None = None
+    color: str | None = None
+    notes: str | None = None
+    trades: list[TradeIn] | None = None
+
+
+def _trade_dict(t: TradeIn) -> dict[str, Any]:
+    symbol = t.symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    if t.mode == "amount":
+        if not t.amountJpy or t.amountJpy <= 0:
+            raise HTTPException(status_code=400, detail="amountJpy must be > 0")
+    else:
+        if not t.shares or t.shares <= 0:
+            raise HTTPException(status_code=400, detail="shares must be > 0")
+    out: dict[str, Any] = {
+        "date": t.date,
+        "symbol": symbol,
+        "side": t.side,
+        "mode": t.mode,
+        "shares": t.shares,
+        "amountJpy": t.amountJpy,
+        "price": t.price,
+    }
+    if t.id:
+        out["id"] = t.id
+    return out
+
+
+@app.get("/api/portfolios")
+def list_portfolios() -> list[dict]:
+    return store.get_portfolios()
+
+
+@app.post("/api/portfolios", status_code=201)
+def create_portfolio(payload: PortfolioIn) -> dict:
+    trades = [_trade_dict(t) for t in payload.trades]
+    return store.create_portfolio(
+        {
+            "name": payload.name,
+            "color": payload.color,
+            "notes": payload.notes,
+            "trades": trades,
+        }
+    )
+
+
+@app.put("/api/portfolios/{portfolio_id}")
+def edit_portfolio(portfolio_id: str, patch: PortfolioPatch) -> dict:
+    update: dict[str, Any] = patch.model_dump(exclude_none=True, exclude={"trades"})
+    if patch.trades is not None:
+        update["trades"] = [_trade_dict(t) for t in patch.trades]
+    result = store.update_portfolio(portfolio_id, update)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Portfolio not found: {portfolio_id}")
+    return result
+
+
+@app.delete("/api/portfolios/{portfolio_id}")
+def remove_portfolio(portfolio_id: str) -> dict:
+    if not store.delete_portfolio(portfolio_id):
+        raise HTTPException(status_code=404, detail=f"Portfolio not found: {portfolio_id}")
+    return {"ok": True}
+
+
+@app.post("/api/portfolios/{portfolio_id}/trades", status_code=201)
+def append_trade(portfolio_id: str, trade: TradeIn) -> dict:
+    symbol = trade.symbol.strip().upper()
+    if symbol not in BY_SLUG and not _ticker_has_data(symbol):
+        raise HTTPException(status_code=400, detail=f"No price data for ticker: {symbol}")
+    result = store.add_trade(portfolio_id, _trade_dict(trade))
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Portfolio not found: {portfolio_id}")
+    return result
+
+
+@app.delete("/api/portfolios/{portfolio_id}/trades/{trade_id}")
+def delete_trade(portfolio_id: str, trade_id: str) -> dict:
+    result = store.remove_trade(portfolio_id, trade_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Portfolio not found: {portfolio_id}")
+    return result
+
+
+@app.get("/api/portfolios/{portfolio_id}/performance")
+def portfolio_performance(portfolio_id: str, refresh: bool = False) -> dict:
+    portfolio = store.get_portfolio(portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail=f"Portfolio not found: {portfolio_id}")
+    if not portfolio["trades"]:
+        raise HTTPException(status_code=400, detail="Portfolio has no trades.")
+    try:
+        return run_portfolio(portfolio["trades"], force=refresh)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

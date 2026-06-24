@@ -50,6 +50,12 @@ export default function RootLayout({
                 ダッシュボード
               </Link>
               <Link
+                href="/portfolio"
+                className="rounded-lg px-3 py-1.5 text-zinc-300 transition hover:bg-zinc-800/60"
+              >
+                ポートフォリオ
+              </Link>
+              <Link
                 href="/strategies"
                 className="rounded-lg px-3 py-1.5 text-zinc-300 transition hover:bg-zinc-800/60"
               >
